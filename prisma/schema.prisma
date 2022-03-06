@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Mastery {
+  id             String   @id @default(uuid())
+  updateAt       DateTime @updatedAt()
+  championId     Int
+  championLevel  Int
+  championPoints Int
+
+  summonerId String
+  Summoner   Summoner @relation(fields: [summonerId], references: [id])
+}
+
+model Match {
+  id         String   @id
+  createdAt  DateTime
+  hasWon     Boolean
+  championId Int
+
+  summonerId String
+  Summoner   Summoner @relation(fields: [summonerId], references: [id])
+}
+
+model Summoner {
+  id        String    @id
+  lane      String?
+  name      String
+  level     Int
+  masteries Mastery[]
+  matches   Match[]
+
+  analyticsId    String?
+  AnalyticsQuery AnalyticsQuery? @relation(fields: [analyticsId], references: [id])
+}
+
+model AnalyticsQuery {
+  id        String     @id @default(uuid())
+  createdAt DateTime   @default(now())
+  depth     Int
+  type      QueryType
+  summoners Summoner[]
+}
+
+enum QueryType {
+  PLAYER
+  CLASH
+}
