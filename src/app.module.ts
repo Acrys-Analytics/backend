@@ -1,15 +1,15 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { AppController } from './app.controller';
-import { TwistedModule } from './twisted/twisted.module';
+import { QueryModule } from './query/query.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { TwistedModule } from './twisted/twisted.module';
+import { LolModule } from './lol/lol.module';
 
 @Module({
   imports: [
+    QueryModule,
     PrismaModule,
-    ConfigModule.forRoot(),
     TwistedModule.forRoot(process.env.RIOT_API_KEY),
+    LolModule,
   ],
-  controllers: [AppController],
 })
 export class AppModule {}

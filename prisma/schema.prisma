@@ -8,47 +8,72 @@ datasource db {
 }
 
 model Mastery {
-  id             String   @id @default(uuid())
-  updateAt       DateTime @updatedAt()
+  id             Int    @id @default(autoincrement())
   championId     Int
+  championName   String
   championLevel  Int
-  championPoints Int
+  chamoionPoints Int
 
-  summonerId String
-  Summoner   Summoner @relation(fields: [summonerId], references: [id])
+  summonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
+  summonerSnapshotId Int
 }
 
 model Match {
-  id         String   @id
-  createdAt  DateTime
-  hasWon     Boolean
-  championId Int
+  id                     Int      @id @default(autoincrement())
+  createdAt              DateTime
+  matchId                String   @unique
+  mode                   String
+  lane                   Lane
+  championId             Int
+  championName           String
+  win                    Boolean
+  pentaKills             Int
+  kills                  Int
+  deaths                 Int
+  assists                Int
+  visionScore            Int
+  damageDealtToChampions Int
+  damageDealtToBuildings Int
 
-  summonerId String
-  Summoner   Summoner @relation(fields: [summonerId], references: [id])
+  SummonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
+  summonerSnapshotId Int
 }
 
-model Summoner {
-  id        String    @id
-  lane      String?
-  name      String
-  level     Int
-  masteries Mastery[]
-  matches   Match[]
+model SummonerSnapshot {
+  id                  Int       @id @default(autoincrement())
+  puuid               String
+  summonerId          String
+  summonerLevel       Int
+  tier                String?
+  rank                String?
+  predictedFirstPick  Int?
+  predictedSecondPick Int?
+  predictedThirdPick  Int?
+  masteries           Mastery[]
+  matches             Match[]
 
-  analyticsId    String?
-  AnalyticsQuery AnalyticsQuery? @relation(fields: [analyticsId], references: [id])
+  analyticsQuery   AnalyticsQuery @relation(fields: [analyticsQueryId], references: [id])
+  analyticsQueryId String
 }
 
 model AnalyticsQuery {
-  id        String     @id @default(uuid())
-  createdAt DateTime   @default(now())
+  id        String             @id @default(uuid())
+  createdAt DateTime           @default(now())
   depth     Int
   type      QueryType
-  summoners Summoner[]
+  complete  Boolean
+  snapshots SummonerSnapshot[]
+}
+
+enum Lane {
+  TOP
+  JUNGLE
+  MID
+  BOT
+  SUPPORT
 }
 
 enum QueryType {
-  PLAYER
   CLASH
+  PLAYER
 }

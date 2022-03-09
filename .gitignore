@@ -3,6 +3,9 @@
 /node_modules
 /prisma/migrations
 
+# env files
+*.env
+
 # Logs
 logs
 *.log
@@ -11,9 +14,6 @@ pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
-
-# Env
-*.env
 
 # OS
 .DS_Store

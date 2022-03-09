@@ -1,24 +1,20 @@
-import { DynamicModule, Logger, Module, Provider } from '@nestjs/common';
+import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { LolApi } from 'twisted';
-import { LOL_API } from './constants';
+import { LOLAPI } from './twisted.constants';
 
 @Module({})
 export class TwistedModule {
   static forRoot(apiKey: string): DynamicModule {
-    const lolApi = new LolApi({
-      key: apiKey,
-    });
+    const lolApi = new LolApi(apiKey);
 
-    const twistedProvider: Provider = {
-      provide: LOL_API,
+    const lolApiProvider: Provider = {
+      provide: LOLAPI,
       useValue: lolApi,
     };
 
     return {
       module: TwistedModule,
-      providers: [twistedProvider],
-      exports: [twistedProvider],
-      global: true,
+      providers: [lolApiProvider],
     };
   }
 }
