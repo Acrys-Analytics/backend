@@ -1,7 +1,8 @@
-import { DynamicModule, Module, Provider } from '@nestjs/common';
+import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
 import { LolApi } from 'twisted';
 import { LOLAPI } from './twisted.constants';
 
+@Global()
 @Module({})
 export class TwistedModule {
   static forRoot(apiKey: string): DynamicModule {
@@ -15,6 +16,7 @@ export class TwistedModule {
     return {
       module: TwistedModule,
       providers: [lolApiProvider],
+      exports: [lolApiProvider],
     };
   }
 }

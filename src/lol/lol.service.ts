@@ -25,4 +25,6 @@ export class LolService {
       mastery,
     };
   }
+
+  // TODO: Fetch champions regularly
 }

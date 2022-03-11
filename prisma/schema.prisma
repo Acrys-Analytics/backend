@@ -8,11 +8,10 @@ datasource db {
 }
 
 model Mastery {
-  id             Int    @id @default(autoincrement())
+  id             Int @id @default(autoincrement())
   championId     Int
-  championName   String
   championLevel  Int
-  chamoionPoints Int
+  championPoints Int
 
   summonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
   summonerSnapshotId Int
@@ -23,7 +22,7 @@ model Match {
   createdAt              DateTime
   matchId                String   @unique
   mode                   String
-  lane                   Lane
+  position               Position
   championId             Int
   championName           String
   win                    Boolean
@@ -35,7 +34,7 @@ model Match {
   damageDealtToChampions Int
   damageDealtToBuildings Int
 
-  SummonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
+  summonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
   summonerSnapshotId Int
 }
 
@@ -44,8 +43,10 @@ model SummonerSnapshot {
   puuid               String
   summonerId          String
   summonerLevel       Int
+  summonerProfileIcon Int
   tier                String?
   rank                String?
+  clashRole           Position?
   predictedFirstPick  Int?
   predictedSecondPick Int?
   predictedThirdPick  Int?
@@ -61,11 +62,12 @@ model AnalyticsQuery {
   createdAt DateTime           @default(now())
   depth     Int
   type      QueryType
-  complete  Boolean
+  complete  Boolean            @default(false)
   snapshots SummonerSnapshot[]
 }
 
-enum Lane {
+enum Position {
+  FILL
   TOP
   JUNGLE
   MID
