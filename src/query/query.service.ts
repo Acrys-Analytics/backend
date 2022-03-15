@@ -56,9 +56,9 @@ export class QueryService {
           return;
         }
 
+        // Send the current state so the client is up to date
         subscriber.next({
           data: currentState,
-          type: 'currentState',
         });
 
         if (currentState.complete) {
@@ -66,19 +66,12 @@ export class QueryService {
           return;
         }
 
-        const updateCallback = async () => {
-          const state = await this.retrieveCompleteAnalyticsQuery(id);
-
+        const updateCallback = async (data) => {
           // Send updated data
           subscriber.next({
-            data: state,
+            data,
           });
         };
-
-        const updateListener = this.eventEmitter.on(
-          `fetch.result.${id}.update`,
-          updateCallback,
-        );
 
         const completeCallback = () => {
           this.eventEmitter.removeListener(
@@ -89,13 +82,13 @@ export class QueryService {
             `fetch.result.${id}.complete`,
             completeCallback,
           );
+
           subscriber.complete();
         };
 
-        const completeListener = this.eventEmitter.on(
-          `fetch.result.${id}.complete`,
-          completeCallback,
-        );
+        // Listen for update on the fetched data
+        this.eventEmitter.on(`fetch.result.${id}.update`, updateCallback);
+        this.eventEmitter.on(`fetch.result.${id}.complete`, completeCallback);
       })();
     });
   }

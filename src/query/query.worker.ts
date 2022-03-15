@@ -1,11 +1,30 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
-import { Position, SummonerSnapshot } from '@prisma/client';
+import {
+  AnalyticsQuery,
+  Mastery,
+  Match,
+  Position,
+  SummonerSnapshot,
+} from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { LOLAPI } from 'src/twisted/twisted.constants';
 import { Constants, LolApi } from 'twisted';
 import { MatchV5DTOs, SummonerV4DTO } from 'twisted/dist/models-dto';
+import { AnalyzedQuery } from './interfaces/analyzedQuery.interface';
 import { FetchEvent } from './interfaces/fetchEvent.interface';
+
+const clashPositionMapping: { [key: string]: Position } = {
+  UNSELECTED: Position.FILL,
+  FILL: Position.FILL,
+  TOP: Position.TOP,
+  JUNGLE: Position.JUNGLE,
+  MIDDLE: Position.MID,
+  BOTTOM: Position.BOT,
+  UTILITY: Position.SUPPORT,
+};
+
+//TODO: Add cache
 
 @Injectable()
 export class QueryWorker {
@@ -45,10 +64,16 @@ export class QueryWorker {
         ).response;
       }
 
-      const entry = await this.createPlayerEntry(summoner, payload.queryId);
-      await this.getPlayerStats(payload, entry);
+      const entry = await this.createSummonerSnapshot(
+        summoner,
+        payload.queryId,
+        clashPositionMapping[player.position],
+      );
+
+      await this.retrievePlayerStats(payload, entry);
       finishedTasks++;
 
+      //! Test this behaviour
       if (finishedTasks === 5) {
         await this.setQueryAsComplete(payload.queryId);
       }
@@ -61,22 +86,25 @@ export class QueryWorker {
       await this.lolApi.Summoner.getByName(payload.summonerName, payload.region)
     ).response;
 
-    const entry = await this.createPlayerEntry(summoner, payload.queryId);
-    await this.getPlayerStats(payload, entry);
+    const entry = await this.createSummonerSnapshot(summoner, payload.queryId);
+    await this.retrievePlayerStats(payload, entry);
 
     await this.setQueryAsComplete(payload.queryId);
   }
 
-  async createPlayerEntry(
+  async createSummonerSnapshot(
     summoner: SummonerV4DTO,
     queryId: string,
+    position?: Position,
   ): Promise<SummonerSnapshot> {
     const entry = await this.prisma.summonerSnapshot.create({
       data: {
         puuid: summoner.puuid,
         summonerId: summoner.id,
+        summonerName: summoner.name,
         summonerLevel: summoner.summonerLevel,
         summonerProfileIcon: summoner.profileIconId,
+        clashRole: position,
 
         analyticsQuery: {
           connect: {
@@ -86,7 +114,8 @@ export class QueryWorker {
       },
     });
 
-    this.eventMitter.emit(`fetch.result.${queryId}.update`);
+    //TODO: Maybe better implementation?
+    this.emitUpdatedData(queryId);
 
     return entry;
   }
@@ -104,7 +133,8 @@ export class QueryWorker {
     this.eventMitter.emit(`fetch.result.${queryId}.complete`);
   }
 
-  async getPlayerStats(payload: FetchEvent, snapshot: SummonerSnapshot) {
+  async retrievePlayerStats(payload: FetchEvent, snapshot: SummonerSnapshot) {
+    /// FETCHING MASTERY ///
     const mastery = (
       await this.lolApi.Champion.masteryBySummoner(
         snapshot.summonerId,
@@ -131,8 +161,9 @@ export class QueryWorker {
       });
     }
 
-    this.eventMitter.emit(`fetch.result.${payload.queryId}.update`);
+    this.emitUpdatedData(payload.queryId);
 
+    /// FETCHING MATCHES ///
     const matches = (
       await this.lolApi.MatchV5.list(
         snapshot.puuid,
@@ -143,10 +174,10 @@ export class QueryWorker {
       )
     ).response;
 
-    // Fetching every match
-    for (let i = 0; i < matches.length; i++) {
+    // Getting data for every match
+    for (let matchId in matches) {
       const match = (
-        await this.lolApi.MatchV5.get(matches[i], Constants.RegionGroups.EUROPE)
+        await this.lolApi.MatchV5.get(matchId, Constants.RegionGroups.EUROPE)
       ).response;
 
       const participant = match.info.participants.find(
@@ -161,7 +192,7 @@ export class QueryWorker {
       await this.prisma.match.create({
         data: {
           createdAt: new Date(match.info.gameCreation),
-          matchId: matches[i],
+          matchId,
           mode: match.info.gameMode,
 
           championId: participant.championId,
@@ -185,11 +216,99 @@ export class QueryWorker {
         },
       });
 
-      this.eventMitter.emit(`fetch.result.${payload.queryId}.update`);
+      this.emitUpdatedData(payload.queryId);
     }
   }
 
-  predictMatchPosition(
+  async emitUpdatedData(id: string) {
+    const data = await this.retrieveCompleteAnalyticsQuery(id);
+
+    const snapshots = data.snapshots.map((snapshot) =>
+      this.analyzeSummonerSnapshot(data, snapshot),
+    );
+
+    this.eventMitter.emit(`fetch.result.${id}.update`, {
+      ...data,
+      snapshots,
+    });
+  }
+
+  private analyzeSummonerSnapshot(
+    query: AnalyticsQuery,
+    snapshot: SummonerSnapshot & {
+      matches: Match[];
+      masteries: Mastery[];
+    },
+  ): AnalyzedQuery.AnalyzedSummoner {
+    const championPool: {
+      [championId: number]: AnalyzedQuery.Mastery;
+    } = {};
+
+    // Analyze every match
+    snapshot.matches.forEach((match) => {
+      if (!championPool[match.championId]) {
+        // Creating champ entry including their masterylevel
+        const masteryData = snapshot.masteries.find(
+          (mastery) => mastery.championId === match.championId,
+        );
+
+        championPool[match.championId] = {
+          championName: match.championName,
+          level: masteryData.championLevel,
+          points: masteryData.championPoints,
+          used: 1,
+          wins: match.win ? 1 : 0,
+        };
+      } else {
+        // Just update the already existing entry
+        if (match.win) {
+          championPool[match.championId].wins++;
+        }
+        championPool[match.championId].used++;
+      }
+    });
+
+    const champIdsSorted = Object.keys(championPool).sort(
+      (a, b) => championPool[b].used - championPool[a].used,
+    );
+
+    const sortedChampionPool: AnalyzedQuery.Mastery[] = [];
+
+    for (let id in champIdsSorted) {
+      sortedChampionPool.push(championPool[id]);
+    }
+
+    return {
+      complete: snapshot.matches.length === query.depth,
+      profile: {
+        name: snapshot.summonerName,
+        level: snapshot.summonerLevel,
+        profileIcon: snapshot.summonerProfileIcon,
+        lane: snapshot.clashRole,
+      },
+      masteries: sortedChampionPool,
+      matches: snapshot.matches,
+      tags: [], //TODO: Add tag system
+    };
+  }
+
+  private async retrieveCompleteAnalyticsQuery(id: string) {
+    return await this.prisma.analyticsQuery.findUnique({
+      where: {
+        id,
+      },
+      include: {
+        snapshots: {
+          include: {
+            matches: true,
+            masteries: true,
+          },
+        },
+      },
+    });
+  }
+
+  private predictMatchPosition(
     lane: MatchV5DTOs.Lane,
     role: MatchV5DTOs.Role,
   ): Position {

@@ -24,7 +24,6 @@ model Match {
   mode                   String
   position               Position
   championId             Int
-  championName           String
   win                    Boolean
   pentaKills             Int
   kills                  Int
@@ -42,6 +41,7 @@ model SummonerSnapshot {
   id                  Int       @id @default(autoincrement())
   puuid               String
   summonerId          String
+  summonerName        String
   summonerLevel       Int
   summonerProfileIcon Int
   tier                String?
