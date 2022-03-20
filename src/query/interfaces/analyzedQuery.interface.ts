@@ -15,7 +15,6 @@ export declare namespace AnalyzedQuery {
     lane: Position | undefined;
   }
   interface Mastery {
-    championName: string;
     level: number;
     points: number;
     used: number;

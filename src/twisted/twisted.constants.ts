@@ -1,1 +1,1 @@
-export const LOLAPI = 'LOL_API';
+export const LOL_API = 'LOL_API';

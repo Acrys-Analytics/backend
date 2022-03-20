@@ -1,6 +1,6 @@
 import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
 import { LolApi } from 'twisted';
-import { LOLAPI } from './twisted.constants';
+import { LOL_API } from './twisted.constants';
 
 @Global()
 @Module({})
@@ -9,7 +9,7 @@ export class TwistedModule {
     const lolApi = new LolApi(apiKey);
 
     const lolApiProvider: Provider = {
-      provide: LOLAPI,
+      provide: LOL_API,
       useValue: lolApi,
     };
 

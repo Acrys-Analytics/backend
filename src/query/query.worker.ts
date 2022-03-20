@@ -8,7 +8,7 @@ import {
   SummonerSnapshot,
 } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { LOLAPI } from 'src/twisted/twisted.constants';
+import { LOL_API } from 'src/twisted/twisted.constants';
 import { Constants, LolApi } from 'twisted';
 import { MatchV5DTOs, SummonerV4DTO } from 'twisted/dist/models-dto';
 import { AnalyzedQuery } from './interfaces/analyzedQuery.interface';
@@ -31,7 +31,7 @@ export class QueryWorker {
   constructor(
     private eventMitter: EventEmitter2,
     private prisma: PrismaService,
-    @Inject(LOLAPI) private lolApi: LolApi,
+    @Inject(LOL_API) private lolApi: LolApi,
   ) {}
 
   @OnEvent('fetch.clash')
@@ -196,7 +196,6 @@ export class QueryWorker {
           mode: match.info.gameMode,
 
           championId: participant.championId,
-          championName: participant.championName,
           position,
           win: participant.win,
 
@@ -253,7 +252,6 @@ export class QueryWorker {
         );
 
         championPool[match.championId] = {
-          championName: match.championName,
           level: masteryData.championLevel,
           points: masteryData.championPoints,
           used: 1,
