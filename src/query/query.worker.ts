@@ -196,6 +196,7 @@ export class QueryWorker {
           mode: match.info.gameMode,
 
           championId: participant.championId,
+          level: participant.champLevel,
           position,
           win: participant.win,
 

@@ -24,6 +24,7 @@ model Match {
   mode                   String
   position               Position
   championId             Int
+  level                  Int
   win                    Boolean
   pentaKills             Int
   kills                  Int
