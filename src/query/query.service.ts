@@ -61,8 +61,12 @@ export class QueryService {
           data: currentState,
         });
 
+        console.log('Data sent');
+
         if (currentState.complete) {
           subscriber.complete();
+
+          console.log('Complete');
           return;
         }
 

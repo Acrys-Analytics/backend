@@ -1,9 +1,9 @@
 import { HttpModule } from '@nestjs/axios';
-import { Module } from '@nestjs/common';
+import { CacheModule, Module } from '@nestjs/common';
 import { LolService } from './lol.service';
 
 @Module({
-  imports: [HttpModule],
+  imports: [HttpModule, CacheModule.register()],
   providers: [LolService],
   exports: [LolService],
 })

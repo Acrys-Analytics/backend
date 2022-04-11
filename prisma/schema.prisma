@@ -20,17 +20,19 @@ model Mastery {
 model Match {
   id                     Int      @id @default(autoincrement())
   createdAt              DateTime
-  matchId                String   @unique
+  matchId                String
   mode                   String
   position               Position
   championId             Int
-  level                  Int
+  championName           String
+  championLevel          Int
   win                    Boolean
   pentaKills             Int
   kills                  Int
   deaths                 Int
   assists                Int
   visionScore            Int
+  items                  Int[]
   damageDealtToChampions Int
   damageDealtToBuildings Int
 
@@ -48,9 +50,7 @@ model SummonerSnapshot {
   tier                String?
   rank                String?
   clashRole           Position?
-  predictedFirstPick  Int?
-  predictedSecondPick Int?
-  predictedThirdPick  Int?
+  mostPlayedRole      Position?
   masteries           Mastery[]
   matches             Match[]
 

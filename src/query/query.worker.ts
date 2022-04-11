@@ -7,6 +7,7 @@ import {
   Position,
   SummonerSnapshot,
 } from '@prisma/client';
+import { LolService } from 'src/lol/lol.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { LOL_API } from 'src/twisted/twisted.constants';
 import { Constants, LolApi } from 'twisted';
@@ -31,6 +32,7 @@ export class QueryWorker {
   constructor(
     private eventMitter: EventEmitter2,
     private prisma: PrismaService,
+    private lolData: LolService,
     @Inject(LOL_API) private lolApi: LolApi,
   ) {}
 
@@ -94,9 +96,12 @@ export class QueryWorker {
 
   async createSummonerSnapshot(
     summoner: SummonerV4DTO,
-    queryId: string,
-    position?: Position,
+    payload: FetchEvent,
   ): Promise<SummonerSnapshot> {
+    const league = (
+      await this.lolApi.League.bySummoner(summoner.id, payload.region)
+    ).response;
+
     const entry = await this.prisma.summonerSnapshot.create({
       data: {
         puuid: summoner.puuid,
@@ -104,11 +109,12 @@ export class QueryWorker {
         summonerName: summoner.name,
         summonerLevel: summoner.summonerLevel,
         summonerProfileIcon: summoner.profileIconId,
-        clashRole: position,
+        tier: league[0].tier,
+        rank: league[0].rank,
 
         analyticsQuery: {
           connect: {
-            id: queryId,
+            id: payload.queryId,
           },
         },
       },
@@ -121,7 +127,7 @@ export class QueryWorker {
   }
 
   async setQueryAsComplete(queryId: string) {
-    this.prisma.analyticsQuery.update({
+    await this.prisma.analyticsQuery.update({
       where: {
         id: queryId,
       },
@@ -164,21 +170,23 @@ export class QueryWorker {
     this.emitUpdatedData(payload.queryId);
 
     /// FETCHING MATCHES ///
+    const regionGroup = Constants.regionToRegionGroup(payload.region);
+
     const matches = (
-      await this.lolApi.MatchV5.list(
-        snapshot.puuid,
-        Constants.RegionGroups.EUROPE,
-        {
-          count: payload.depth,
-        },
-      )
+      await this.lolApi.MatchV5.list(snapshot.puuid, regionGroup, {
+        start: 0,
+        count: payload.depth,
+      })
     ).response;
 
+    console.log(matches);
+
     // Getting data for every match
-    for (let matchId in matches) {
-      const match = (
-        await this.lolApi.MatchV5.get(matchId, Constants.RegionGroups.EUROPE)
-      ).response;
+    for (let i = 0; i < matches.length; i++) {
+      const matchId: string = matches[i];
+
+      const match = (await this.lolApi.MatchV5.get(matchId, regionGroup))
+        .response;
 
       const participant = match.info.participants.find(
         (participant) => participant.puuid === snapshot.puuid,
@@ -189,6 +197,20 @@ export class QueryWorker {
         participant.role,
       );
 
+      const championName = await this.lolData.getChampionName(
+        participant.championId,
+      );
+
+      const items: number[] = [
+        participant.item0,
+        participant.item1,
+        participant.item2,
+        participant.item3,
+        participant.item4,
+        participant.item5,
+        participant.item6,
+      ];
+
       await this.prisma.match.create({
         data: {
           createdAt: new Date(match.info.gameCreation),
@@ -196,7 +218,8 @@ export class QueryWorker {
           mode: match.info.gameMode,
 
           championId: participant.championId,
-          level: participant.champLevel,
+          championName,
+          championLevel: participant.champLevel,
           position,
           win: participant.win,
 
@@ -204,6 +227,8 @@ export class QueryWorker {
           kills: participant.kills,
           deaths: participant.deaths,
           assists: participant.assists,
+
+          items,
           visionScore: participant.visionScore,
           damageDealtToChampions: participant.totalDamageDealtToChampions,
           damageDealtToBuildings: participant.damageDealtToBuildings,
@@ -244,6 +269,8 @@ export class QueryWorker {
       [championId: number]: AnalyzedQuery.Mastery;
     } = {};
 
+    const positions = [];
+
     // Analyze every match
     snapshot.matches.forEach((match) => {
       if (!championPool[match.championId]) {
@@ -280,12 +307,14 @@ export class QueryWorker {
     return {
       complete: snapshot.matches.length === query.depth,
       profile: {
+        profileIcon: snapshot.summonerProfileIcon,
         name: snapshot.summonerName,
         level: snapshot.summonerLevel,
-        profileIcon: snapshot.summonerProfileIcon,
+        rank: snapshot.rank,
+        tier: snapshot.tier,
         lane: snapshot.clashRole,
       },
-      masteries: sortedChampionPool,
+      championPool: sortedChampionPool,
       matches: snapshot.matches,
       tags: [], //TODO: Add tag system
     };

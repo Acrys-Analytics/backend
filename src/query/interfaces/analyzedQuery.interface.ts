@@ -4,7 +4,7 @@ export declare namespace AnalyzedQuery {
   interface AnalyzedSummoner {
     complete: boolean;
     profile: Profile;
-    masteries: Mastery[];
+    championPool: Mastery[];
     matches: Match[];
     tags: string[];
   }
@@ -12,7 +12,9 @@ export declare namespace AnalyzedQuery {
     profileIcon: number;
     name: string;
     level: number;
-    lane: Position | undefined;
+    tier: string;
+    rank: string;
+    lane: Position;
   }
   interface Mastery {
     level: number;

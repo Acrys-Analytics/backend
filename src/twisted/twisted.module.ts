@@ -6,7 +6,11 @@ import { LOL_API } from './twisted.constants';
 @Module({})
 export class TwistedModule {
   static forRoot(apiKey: string): DynamicModule {
-    const lolApi = new LolApi(apiKey);
+    const lolApi = new LolApi({
+      rateLimitRetry: true,
+      rateLimitRetryAttempts: 3,
+      key: apiKey,
+    });
 
     const lolApiProvider: Provider = {
       provide: LOL_API,
