@@ -8,75 +8,117 @@ datasource db {
 }
 
 model Mastery {
-  id             Int @id @default(autoincrement())
-  championId     Int
-  championLevel  Int
-  championPoints Int
+  id           Int    @id @default(autoincrement())
+  championId   Int
+  championName String
+  level        Int
+  points       Int
 
-  summonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
+  SummonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
   summonerSnapshotId Int
+}
+
+model Participant {
+  id                      Int      @id @default(autoincrement())
+  summonerId              String
+  championId              Int
+  championName            String
+  championLevel           Int
+  position                Position
+  win                     Boolean
+  kills                   Int
+  deaths                  Int
+  assists                 Int
+  creepScore              Int
+  visionScore             Int
+  visionWardsBoughtInGame Int
+  gold                    Int
+  damageToChamps          Int
+  damageToBuildings       Int
+  spells                  Int[]
+  runes                   Int[]
+  items                   Int[]
+
+  Match   Match  @relation(fields: [matchId], references: [id])
+  matchId String
+
+  snapshots SummonerSnapshot[]
+
+  @@unique([summonerId, matchId])
 }
 
 model Match {
-  id                     Int      @id @default(autoincrement())
-  createdAt              DateTime
-  matchId                String
-  mode                   String
-  position               Position
-  championId             Int
-  championName           String
-  championLevel          Int
-  win                    Boolean
-  pentaKills             Int
-  kills                  Int
-  deaths                 Int
-  assists                Int
-  visionScore            Int
-  items                  Int[]
-  damageDealtToChampions Int
-  damageDealtToBuildings Int
+  id        String   @id
+  createdAt DateTime
+  duration  Int
+  type      String
+  version   String
+  mapId     Int
 
-  summonerSnapshot   SummonerSnapshot @relation(fields: [summonerSnapshotId], references: [id])
-  summonerSnapshotId Int
+  participants Participant[]
 }
 
 model SummonerSnapshot {
-  id                  Int       @id @default(autoincrement())
-  puuid               String
-  summonerId          String
-  summonerName        String
-  summonerLevel       Int
-  summonerProfileIcon Int
-  tier                String?
-  rank                String?
-  clashRole           Position?
-  mostPlayedRole      Position?
-  masteries           Mastery[]
-  matches             Match[]
+  id             Int       @id @default(autoincrement())
+  puuid          String
+  summonerId     String
+  summonerIconId Int
+  summonerName   String
+  summonerLevel  Int
+  clashPosition  Position?
+  tier           Tier?
+  rank           Rank?
+  leaguePoints   Int?
+  masteries      Mastery[]
 
-  analyticsQuery   AnalyticsQuery @relation(fields: [analyticsQueryId], references: [id])
+  participants Participant[]
+
+  AnalyticsQuery   AnalyticsQuery @relation(fields: [analyticsQueryId], references: [id])
   analyticsQueryId String
 }
 
 model AnalyticsQuery {
-  id        String             @id @default(uuid())
-  createdAt DateTime           @default(now())
+  id        String    @id @default(uuid())
+  createdAt DateTime  @default(now())
+  complete  Boolean   @default(false)
+  error     String?
   depth     Int
+  region    String
   type      QueryType
-  complete  Boolean            @default(false)
+  search    String
+
   snapshots SummonerSnapshot[]
 }
 
+enum Tier {
+  IRON
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
+  DIAMOND
+  MASTER
+  GRANDMASTER
+  CHALLENGER
+}
+
+enum Rank {
+  IV
+  III
+  II
+  I
+}
+
 enum Position {
-  FILL
   TOP
   JUNGLE
-  MID
-  BOT
-  SUPPORT
+  MIDDLE
+  BOTTOM
+  UTILITY
+  FILL
 }
 
 enum QueryType {
-  CLASH
   PLAYER
+  CLASH
 }

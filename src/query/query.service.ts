@@ -1,99 +1,241 @@
+import { InjectQueue } from '@nestjs/bull';
 import { Injectable, MessageEvent } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { Queue } from 'bull';
 import { Observable } from 'rxjs';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateQueryDTO } from './dto/CreateQueryDTO';
-import { FetchEvent } from './interfaces/fetchEvent.interface';
+import { AnalyzedQueriesDTOs } from './dto/AnalyzedQueryDTO';
+import { QueryUpdatedEvent } from './events/query-updated.event';
+import { AnalyticsQuery, Mastery, SummonerSnapshot } from '@prisma/client';
 
 @Injectable()
 export class QueryService {
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
+    @InjectQueue('query') private queryQueue: Queue<AnalyticsQuery>,
   ) {}
 
-  async createAnalyticsQuery(config: CreateQueryDTO) {
-    const analyticsQuery = await this.prisma.analyticsQuery.create({
-      data: {
-        depth: config.depth,
-        type: config.type,
-      },
+  async createQuery(config: CreateQueryDTO): Promise<string> {
+    const query = await this.prisma.analyticsQuery.create({
+      data: config,
     });
 
-    this.eventEmitter.emit(`fetch.${config.type.toLowerCase()}`, {
-      depth: config.depth,
-      region: config.region,
-      summonerName: config.searchName,
-      queryId: analyticsQuery.id,
-    } as FetchEvent);
+    await this.queryQueue.add(query);
 
-    return analyticsQuery.id;
+    return query.id;
   }
 
-  private async retrieveCompleteAnalyticsQuery(id: string) {
-    return await this.prisma.analyticsQuery.findUnique({
-      where: {
-        id,
-      },
-      include: {
-        snapshots: {
-          include: {
-            matches: true,
-            masteries: true,
-          },
-        },
-      },
-    });
-  }
-
-  getAnalyticsQuery(id: string): Observable<MessageEvent> {
+  retrieveQuery(queryId: string): Observable<MessageEvent> {
     return new Observable((subscriber) => {
       (async () => {
-        const currentState = await this.retrieveCompleteAnalyticsQuery(id);
+        const queryExists = await this.queryExists(queryId);
 
-        if (!currentState) {
-          subscriber.error(`Couldn't find a query under the id ${id}`);
+        if (!queryExists) {
+          subscriber.error(`Couldn't find a query under the id ${queryId}`);
           return;
         }
 
-        // Send the current state so the client is up to date
+        const currentState = await this.getAnalyzedQuery(queryId);
+
         subscriber.next({
           data: currentState,
         });
 
-        console.log('Data sent');
-
         if (currentState.complete) {
           subscriber.complete();
-
-          console.log('Complete');
           return;
         }
 
-        const updateCallback = async (data) => {
-          // Send updated data
+        const updateCallback = (data) => {
           subscriber.next({
             data,
           });
         };
 
-        const completeCallback = () => {
+        const completeCallback = async () => {
+          const data = await this.getAnalyzedQuery(queryId);
+          subscriber.next({
+            data,
+          });
+
           this.eventEmitter.removeListener(
-            `fetch.result.${id}.update`,
+            `query.result.${queryId}.update`,
             updateCallback,
           );
           this.eventEmitter.removeListener(
-            `fetch.result.${id}.complete`,
+            `query.result.${queryId}.complete`,
             completeCallback,
           );
 
           subscriber.complete();
         };
 
-        // Listen for update on the fetched data
-        this.eventEmitter.on(`fetch.result.${id}.update`, updateCallback);
-        this.eventEmitter.on(`fetch.result.${id}.complete`, completeCallback);
+        this.eventEmitter.on(`query.result.${queryId}.update`, updateCallback);
+        this.eventEmitter.on(
+          `query.result.${queryId}.complete`,
+          completeCallback,
+        );
       })();
+    });
+  }
+
+  @OnEvent('query.update')
+  async handleQueryUpdate(payload: QueryUpdatedEvent) {
+    const analyzedQuery = await this.getAnalyzedQuery(payload.queryId);
+
+    this.eventEmitter.emit(
+      `query.result.${payload.queryId}.update`,
+      analyzedQuery,
+    );
+  }
+
+  async getAnalyzedQuery(
+    queryId: string,
+  ): Promise<AnalyzedQueriesDTOs.AnalyzedQuery> {
+    const query = await this.getCompleteQuery(queryId);
+
+    const snapshots: AnalyzedQueriesDTOs.AnalyzedSnapshot[] = [];
+
+    for (let i = 0; i < query.snapshots.length; i++) {
+      const snapshot = query.snapshots[i];
+      const championPool = await this.getMostPlayedChampions(
+        snapshot,
+        snapshot.masteries,
+      );
+      const mostPlayedPosition = await this.getPositionCount(snapshot);
+
+      snapshots.push({
+        ...snapshot,
+        championPool,
+        mostPlayedPosition,
+      });
+    }
+
+    return {
+      ...query,
+      snapshots,
+    };
+  }
+
+  private async queryExists(queryId: string) {
+    const count = await this.prisma.analyticsQuery.count({
+      where: {
+        id: queryId,
+      },
+    });
+
+    return count > 0;
+  }
+
+  private async getMostPlayedChampions(
+    snapshot: SummonerSnapshot,
+    masteries: Mastery[],
+  ): Promise<AnalyzedQueriesDTOs.Champion[]> {
+    const counts = await this.prisma.participant.groupBy({
+      by: ['championName', 'championId'],
+      _count: {
+        championName: true,
+      },
+      where: {
+        snapshots: {
+          some: {
+            id: snapshot.id,
+          },
+        },
+      },
+      orderBy: {
+        _count: {
+          championName: 'desc',
+        },
+      },
+      take: 10,
+    });
+
+    const mappedMasteries: { [championId: string]: Mastery } = {};
+
+    masteries.forEach((mastery) => {
+      mappedMasteries[mastery.championId] = mastery;
+    });
+
+    const championPool: AnalyzedQueriesDTOs.Champion[] = [];
+
+    for (let i = 0; i < counts.length; i++) {
+      const value = counts[i];
+
+      const championWins = await this.prisma.participant.aggregate({
+        _count: {
+          win: true,
+        },
+        where: {
+          championId: value.championId,
+          win: true,
+          snapshots: {
+            some: {
+              id: snapshot.id,
+            },
+          },
+        },
+      });
+
+      championPool.push({
+        championId: value.championId,
+        championName: value.championName,
+        level: mappedMasteries[value.championId]?.level || 0,
+        points: mappedMasteries[value.championId]?.points || 0,
+        used: value._count.championName,
+        wins: championWins._count.win,
+      });
+    }
+
+    return championPool;
+  }
+
+  private async getPositionCount(
+    snapshot: SummonerSnapshot,
+  ): Promise<AnalyzedQueriesDTOs.PositionPlayed[]> {
+    const counts = await this.prisma.participant.groupBy({
+      by: ['position'],
+      _count: {
+        position: true,
+      },
+      where: {
+        snapshots: {
+          some: {
+            id: snapshot.id,
+          },
+        },
+      },
+      orderBy: {
+        _count: {
+          position: 'desc',
+        },
+      },
+      take: 10,
+    });
+
+    return counts.map<AnalyzedQueriesDTOs.PositionPlayed>((value) => {
+      return {
+        count: value._count.position,
+        position: value.position,
+      };
+    });
+  }
+
+  private getCompleteQuery(id: string) {
+    return this.prisma.analyticsQuery.findUnique({
+      where: {
+        id,
+      },
+      include: {
+        snapshots: {
+          include: {
+            participants: true,
+            masteries: true,
+          },
+        },
+      },
     });
   }
 }

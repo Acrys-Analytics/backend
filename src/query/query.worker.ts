@@ -1,374 +1,408 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { InjectQueue, OnQueueFailed, Process, Processor } from '@nestjs/bull';
+import { Inject, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   AnalyticsQuery,
-  Mastery,
   Match,
   Position,
+  Prisma,
+  Rank,
   SummonerSnapshot,
+  Tier,
 } from '@prisma/client';
+import { Job, Queue } from 'bull';
 import { LolService } from 'src/lol/lol.service';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { LOL_API } from 'src/twisted/twisted.constants';
+import { LOL_API } from 'src/twisted/constants';
 import { Constants, LolApi } from 'twisted';
-import { MatchV5DTOs, SummonerV4DTO } from 'twisted/dist/models-dto';
-import { AnalyzedQuery } from './interfaces/analyzedQuery.interface';
-import { FetchEvent } from './interfaces/fetchEvent.interface';
+import { RegionGroups, Regions } from 'twisted/dist/constants';
+import {
+  ChampionMasteryDTO,
+  SummonerLeagueDto,
+  SummonerV4DTO,
+} from 'twisted/dist/models-dto';
+import { ClashTeamDto } from 'twisted/dist/models-dto/clash/team.clash.dto';
+import { FetchMatchDTO } from './dto/FetchMatchDTO';
+import { QueryUpdatedEvent } from './events/query-updated.event';
+import { ClashPositionMapping } from './maps/clashPosition';
 
-const clashPositionMapping: { [key: string]: Position } = {
-  UNSELECTED: Position.FILL,
-  FILL: Position.FILL,
-  TOP: Position.TOP,
-  JUNGLE: Position.JUNGLE,
-  MIDDLE: Position.MID,
-  BOTTOM: Position.BOT,
-  UTILITY: Position.SUPPORT,
+type SummonerMetadata = {
+  leagues: SummonerLeagueDto[];
+  masteries: ChampionMasteryDTO[];
 };
 
-//TODO: Add cache
+type CompleteSummoner = SummonerV4DTO & SummonerMetadata;
 
-@Injectable()
+@Processor('query')
 export class QueryWorker {
+  private readonly logger = new Logger(QueryWorker.name);
+
   constructor(
-    private eventMitter: EventEmitter2,
     private prisma: PrismaService,
-    private lolData: LolService,
+    private lolService: LolService,
+    private eventEmitter: EventEmitter2,
     @Inject(LOL_API) private lolApi: LolApi,
+    @InjectQueue('match') private matchQueue: Queue<FetchMatchDTO>,
   ) {}
 
-  @OnEvent('fetch.clash')
-  async fetchClashData(payload: FetchEvent) {
-    const originSummoner = (
-      await this.lolApi.Summoner.getByName(payload.summonerName, payload.region)
-    ).response;
+  // Only allowing one query because of matchJob problem
+  // TODO: fix
+  @Process({
+    concurrency: 1,
+  })
+  async handleQuery(job: Job<AnalyticsQuery>) {
+    const query = job.data;
+    const region = query.region as Regions;
+    const regionGroup = Constants.regionToRegionGroup(region);
 
-    // TODO: Maybe selection of team?
-    const summonerTeams = (
-      await this.lolApi.Clash.playersList(originSummoner.id, payload.region)
-    ).response[0];
+    this.logger.log(`Got new queryJob: ${query.id}`);
 
-    const team = (
-      await this.lolApi.Clash.getTeamById(summonerTeams.teamId, payload.region)
-    ).response;
+    const summoners: Prisma.SummonerSnapshotCreateWithoutAnalyticsQueryInput[] =
+      [];
 
-    let finishedTasks = 0;
-
-    // Start collecting infos for every player
-    team.players.forEach(async (player) => {
-      let summoner: SummonerV4DTO;
-
-      // Check if we already fetched the user
-      if (player.summonerId === originSummoner.id) {
-        summoner = originSummoner;
-      } else {
-        summoner = (
-          await this.lolApi.Summoner.getById(player.summonerId, payload.region)
-        ).response;
+    switch (query.type) {
+      case 'PLAYER': {
+        this.logger.debug(`Searching for player ${query.search}`);
+        const player = await this.fetchSummonerbyName(query.search, region);
+        summoners.push(this.serializeSummoner(player));
+        break;
       }
+      case 'CLASH': {
+        this.logger.debug(
+          `Searching for clash team with member ${query.search}`,
+        );
+        const originSummoner = await this.fetchSummonerbyName(
+          query.search,
+          region,
+        );
 
-      const entry = await this.createSummonerSnapshot(
-        summoner,
-        payload.queryId,
-        clashPositionMapping[player.position],
+        const clashTeam = await this.fetchClashTeam(originSummoner.id, region);
+
+        this.logger.debug(`Got team ${clashTeam.name}`);
+
+        const members = await Promise.all(
+          clashTeam.players.map<
+            Promise<Prisma.SummonerSnapshotCreateWithoutAnalyticsQueryInput>
+          >(async (member) => {
+            let summoner: CompleteSummoner;
+
+            if (member.summonerId === originSummoner.id) {
+              summoner = originSummoner;
+            } else {
+              summoner = await this.fetchSummonerbyId(
+                member.summonerId,
+                region,
+              );
+            }
+
+            const serializedSummoner = this.serializeSummoner(summoner);
+            const clashPosition: Position =
+              ClashPositionMapping[member.position];
+
+            return {
+              ...serializedSummoner,
+              clashPosition,
+            };
+          }),
+        );
+
+        summoners.push(...members);
+        break;
+      }
+    }
+
+    const matchesWithSnapshots: { [matchId: string]: FetchMatchDTO } = {};
+
+    for (let i = 0; i < summoners.length; i++) {
+      this.logger.debug(
+        `Creating db snapshot for summoner ${summoners[i].summonerName}...`,
       );
-
-      await this.retrievePlayerStats(payload, entry);
-      finishedTasks++;
-
-      //! Test this behaviour
-      if (finishedTasks === 5) {
-        await this.setQueryAsComplete(payload.queryId);
-      }
-    });
-  }
-
-  @OnEvent('fetch.player')
-  async fetchPlayerData(payload: FetchEvent) {
-    const summoner = (
-      await this.lolApi.Summoner.getByName(payload.summonerName, payload.region)
-    ).response;
-
-    const entry = await this.createSummonerSnapshot(summoner, payload.queryId);
-    await this.retrievePlayerStats(payload, entry);
-
-    await this.setQueryAsComplete(payload.queryId);
-  }
-
-  async createSummonerSnapshot(
-    summoner: SummonerV4DTO,
-    payload: FetchEvent,
-  ): Promise<SummonerSnapshot> {
-    const league = (
-      await this.lolApi.League.bySummoner(summoner.id, payload.region)
-    ).response;
-
-    const entry = await this.prisma.summonerSnapshot.create({
-      data: {
-        puuid: summoner.puuid,
-        summonerId: summoner.id,
-        summonerName: summoner.name,
-        summonerLevel: summoner.summonerLevel,
-        summonerProfileIcon: summoner.profileIconId,
-        tier: league[0].tier,
-        rank: league[0].rank,
-
-        analyticsQuery: {
-          connect: {
-            id: payload.queryId,
+      const snapshot = await this.prisma.summonerSnapshot.create({
+        data: {
+          ...summoners[i],
+          AnalyticsQuery: {
+            connect: {
+              id: query.id,
+            },
           },
         },
-      },
-    });
+      });
 
-    //TODO: Maybe better implementation?
-    this.emitUpdatedData(queryId);
+      this.eventEmitter.emit(`query.update`, {
+        queryId: query.id,
+      } as QueryUpdatedEvent);
 
-    return entry;
-  }
+      const matches: string[] = await this.fetchMatchList(
+        snapshot.puuid,
+        regionGroup,
+        query.depth,
+      );
 
-  async setQueryAsComplete(queryId: string) {
+      this.logger.verbose(
+        `Fetched ${matches.length} matchIds for ${snapshot.summonerName}`,
+      );
+
+      matches.forEach((matchId) => {
+        if (!matchesWithSnapshots[matchId]) {
+          matchesWithSnapshots[matchId] = {
+            matchId,
+            regionGroup,
+            queryId: query.id,
+            snapshots: [snapshot],
+          };
+        } else {
+          matchesWithSnapshots[matchId].snapshots.push(snapshot);
+        }
+      });
+    }
+
+    const allMatches = Object.values(matchesWithSnapshots);
+    const matchJobs: Job<FetchMatchDTO>[] = [];
+
+    for (let i = 0; i < allMatches.length; i++) {
+      const job = await this.addSummonerMatch(allMatches[i]);
+      job && matchJobs.push(job);
+    }
+
+    // Wait until all matches have been resolved
+    // Max listeners exceeds ????
+    await Promise.all(
+      matchJobs.map<Promise<any>>((job: Job<FetchMatchDTO>) => job.finished()),
+    );
+
     await this.prisma.analyticsQuery.update({
       where: {
-        id: queryId,
+        id: query.id,
       },
       data: {
         complete: true,
       },
     });
 
-    this.eventMitter.emit(`fetch.result.${queryId}.complete`);
+    this.logger.log(`Query ${query.id} is finished!`);
+    this.eventEmitter.emit(`query.result.${query.id}.complete`);
   }
 
-  async retrievePlayerStats(payload: FetchEvent, snapshot: SummonerSnapshot) {
-    /// FETCHING MASTERY ///
-    const mastery = (
-      await this.lolApi.Champion.masteryBySummoner(
-        snapshot.summonerId,
-        payload.region,
-      )
-    ).response;
+  @OnQueueFailed()
+  async handleError(job: Job<AnalyticsQuery>, error: Error) {
+    const query = job.data;
 
-    // Create entry for every mastery
-    for (let i = 0; i < mastery.length; i++) {
-      const master = mastery[i];
-
-      await this.prisma.mastery.create({
-        data: {
-          championId: master.championId,
-          championLevel: master.championLevel,
-          championPoints: master.championPoints,
-
-          summonerSnapshot: {
-            connect: {
-              id: snapshot.id,
-            },
-          },
-        },
-      });
-    }
-
-    this.emitUpdatedData(payload.queryId);
-
-    /// FETCHING MATCHES ///
-    const regionGroup = Constants.regionToRegionGroup(payload.region);
-
-    const matches = (
-      await this.lolApi.MatchV5.list(snapshot.puuid, regionGroup, {
-        start: 0,
-        count: payload.depth,
-      })
-    ).response;
-
-    console.log(matches);
-
-    // Getting data for every match
-    for (let i = 0; i < matches.length; i++) {
-      const matchId: string = matches[i];
-
-      const match = (await this.lolApi.MatchV5.get(matchId, regionGroup))
-        .response;
-
-      const participant = match.info.participants.find(
-        (participant) => participant.puuid === snapshot.puuid,
-      );
-
-      const position = this.predictMatchPosition(
-        participant.lane,
-        participant.role,
-      );
-
-      const championName = await this.lolData.getChampionName(
-        participant.championId,
-      );
-
-      const items: number[] = [
-        participant.item0,
-        participant.item1,
-        participant.item2,
-        participant.item3,
-        participant.item4,
-        participant.item5,
-        participant.item6,
-      ];
-
-      await this.prisma.match.create({
-        data: {
-          createdAt: new Date(match.info.gameCreation),
-          matchId,
-          mode: match.info.gameMode,
-
-          championId: participant.championId,
-          championName,
-          championLevel: participant.champLevel,
-          position,
-          win: participant.win,
-
-          pentaKills: participant.pentaKills,
-          kills: participant.kills,
-          deaths: participant.deaths,
-          assists: participant.assists,
-
-          items,
-          visionScore: participant.visionScore,
-          damageDealtToChampions: participant.totalDamageDealtToChampions,
-          damageDealtToBuildings: participant.damageDealtToBuildings,
-
-          summonerSnapshot: {
-            connect: {
-              id: snapshot.id,
-            },
-          },
-        },
-      });
-
-      this.emitUpdatedData(payload.queryId);
-    }
-  }
-
-  async emitUpdatedData(id: string) {
-    const data = await this.retrieveCompleteAnalyticsQuery(id);
-
-    const snapshots = data.snapshots.map((snapshot) =>
-      this.analyzeSummonerSnapshot(data, snapshot),
-    );
-
-    this.eventMitter.emit(`fetch.result.${id}.update`, {
-      ...data,
-      snapshots,
+    this.logger.error(error.message, error.stack);
+    await this.prisma.analyticsQuery.update({
+      where: {
+        id: query.id,
+      },
+      data: {
+        error: error.message,
+        //complete: true,
+      },
     });
   }
 
-  private analyzeSummonerSnapshot(
-    query: AnalyticsQuery,
-    snapshot: SummonerSnapshot & {
-      matches: Match[];
-      masteries: Mastery[];
-    },
-  ): AnalyzedQuery.AnalyzedSummoner {
-    const championPool: {
-      [championId: number]: AnalyzedQuery.Mastery;
-    } = {};
+  private async fetchClashTeam(
+    summonerId: string,
+    region: Regions,
+  ): Promise<ClashTeamDto> {
+    const summonerTeams = (
+      await this.lolApi.Clash.playersList(summonerId, region)
+    ).response;
 
-    const positions = [];
+    if (summonerTeams.length < 1 || !summonerTeams[0]?.teamId)
+      throw new Error("Couldn't find clash team");
 
-    // Analyze every match
-    snapshot.matches.forEach((match) => {
-      if (!championPool[match.championId]) {
-        // Creating champ entry including their masterylevel
-        const masteryData = snapshot.masteries.find(
-          (mastery) => mastery.championId === match.championId,
-        );
+    const clashTeam = (
+      await this.lolApi.Clash.getTeamById(summonerTeams[0].teamId, region)
+    ).response;
 
-        championPool[match.championId] = {
-          level: masteryData.championLevel,
-          points: masteryData.championPoints,
-          used: 1,
-          wins: match.win ? 1 : 0,
-        };
-      } else {
-        // Just update the already existing entry
-        if (match.win) {
-          championPool[match.championId].wins++;
-        }
-        championPool[match.championId].used++;
-      }
-    });
+    return clashTeam;
+  }
 
-    const champIdsSorted = Object.keys(championPool).sort(
-      (a, b) => championPool[b].used - championPool[a].used,
-    );
-
-    const sortedChampionPool: AnalyzedQuery.Mastery[] = [];
-
-    for (let id in champIdsSorted) {
-      sortedChampionPool.push(championPool[id]);
-    }
+  private async fetchSummonerbyName(
+    summonerName: string,
+    region: Regions,
+  ): Promise<CompleteSummoner> {
+    const summoner = await this.getSummonerByName(summonerName, region);
+    const metaData = await this.fetchMetadataForSummoner(summoner, region);
 
     return {
-      complete: snapshot.matches.length === query.depth,
-      profile: {
-        profileIcon: snapshot.summonerProfileIcon,
-        name: snapshot.summonerName,
-        level: snapshot.summonerLevel,
-        rank: snapshot.rank,
-        tier: snapshot.tier,
-        lane: snapshot.clashRole,
-      },
-      championPool: sortedChampionPool,
-      matches: snapshot.matches,
-      tags: [], //TODO: Add tag system
+      ...summoner,
+      ...metaData,
     };
   }
 
-  private async retrieveCompleteAnalyticsQuery(id: string) {
-    return await this.prisma.analyticsQuery.findUnique({
+  private async fetchSummonerbyId(
+    summonerId: string,
+    region: Regions,
+  ): Promise<CompleteSummoner> {
+    const summoner = await this.getSummonerById(summonerId, region);
+    const metaData = await this.fetchMetadataForSummoner(summoner, region);
+
+    return {
+      ...summoner,
+      ...metaData,
+    };
+  }
+
+  private async fetchMetadataForSummoner(
+    summoner: SummonerV4DTO,
+    region: Regions,
+  ): Promise<SummonerMetadata> {
+    const leagues = (await this.lolApi.League.bySummoner(summoner.id, region))
+      .response;
+    const masteries = (
+      await this.lolApi.Champion.masteryBySummoner(summoner.id, region)
+    ).response;
+
+    return {
+      leagues,
+      masteries,
+    };
+  }
+
+  private async getSummonerById(
+    id: string,
+    region: Regions,
+  ): Promise<SummonerV4DTO> {
+    return (await this.lolApi.Summoner.getById(id, region)).response;
+  }
+
+  private async getSummonerByName(
+    name: string,
+    region: Regions,
+  ): Promise<SummonerV4DTO> {
+    return (await this.lolApi.Summoner.getByName(name, region)).response;
+  }
+
+  private async fetchMatchList(
+    puuid: string,
+    regionGroup: RegionGroups,
+    count: number,
+  ) {
+    return (
+      await this.lolApi.MatchV5.list(puuid, regionGroup, {
+        count,
+      })
+    ).response;
+  }
+
+  // TODO: Fix this for concurrent Queries
+  private async addSummonerMatch(
+    fetchRequest: FetchMatchDTO,
+  ): Promise<Job<FetchMatchDTO>> {
+    /*
+    const possibleMatchJob = await this.matchJobAlreadyExists(
+      fetchRequest.matchId,
+    );
+
+    if (possibleMatchJob) {
+      this.logger.debug(
+        `Job for match ${fetchRequest.matchId} already found. Adding snapshot links to job.`,
+      );
+      possibleMatchJob.update({
+        ...possibleMatchJob.data,
+        snapshots: [
+          ...possibleMatchJob.data.snapshots,
+          ...fetchRequest.snapshots,
+        ],
+      });
+      return;
+    }
+    */
+
+    const possibleDbMatch = await this.matchInDbExists(fetchRequest.matchId);
+
+    if (possibleDbMatch) {
+      for (let i = 0; i < fetchRequest.snapshots.length; i++) {
+        const snapshot = fetchRequest.snapshots[i];
+
+        this.logger.debug(
+          `Match ${fetchRequest.matchId} found in Db. Linking snapshot for ${snapshot.summonerName}.`,
+        );
+
+        await this.linkMatch(fetchRequest.matchId, snapshot);
+      }
+      return;
+    }
+
+    this.logger.debug(`Adding match ${fetchRequest.matchId} to matchQueue.`);
+    return await this.matchQueue.add(fetchRequest);
+  }
+
+  private async linkMatch(matchId: string, snapshot: SummonerSnapshot) {
+    const participant = await this.prisma.participant.findUnique({
       where: {
-        id,
+        summonerId_matchId: {
+          matchId,
+          summonerId: snapshot.summonerId,
+        },
       },
-      include: {
+    });
+
+    await this.prisma.participant.update({
+      where: {
+        id: participant.id,
+      },
+      data: {
         snapshots: {
-          include: {
-            matches: true,
-            masteries: true,
+          connect: {
+            id: snapshot.id,
           },
         },
       },
     });
   }
 
-  private predictMatchPosition(
-    lane: MatchV5DTOs.Lane,
-    role: MatchV5DTOs.Role,
-  ): Position {
-    switch (lane) {
-      case 'TOP': {
-        if (role === 'SOLO') {
-          return Position.TOP;
-        }
-      }
-      case 'JUNGLE': {
-        if (role === 'NONE') {
-          return Position.JUNGLE;
-        }
-      }
-      case 'MIDDLE': {
-        if (role === 'SOLO') {
-          return Position.MID;
-        }
-      }
-      case 'BOTTOM': {
-        switch (role) {
-          case 'CARRY': {
-            return Position.BOT;
-          }
-          case 'SUPPORT': {
-            return Position.SUPPORT;
-          }
-        }
-      }
-      default: {
-        return Position.FILL;
-      }
-    }
+  private async matchJobAlreadyExists(
+    matchId: string,
+  ): Promise<Job<FetchMatchDTO>> {
+    const jobs = await this.matchQueue.getJobs([
+      'waiting',
+      'delayed',
+      'paused',
+    ]);
+
+    return jobs.find((job) => job.data.matchId === matchId);
+  }
+
+  private async matchInDbExists(matchId: string): Promise<boolean> {
+    const matchCount = await this.prisma.match.count({
+      where: {
+        id: matchId,
+      },
+    });
+
+    return matchCount > 0;
+  }
+
+  private serializeSummoner(
+    summoner: CompleteSummoner,
+  ): Prisma.SummonerSnapshotCreateWithoutAnalyticsQueryInput {
+    const masteries =
+      summoner.masteries.map<Prisma.MasteryCreateWithoutSummonerSnapshotInput>(
+        (mastery) => {
+          return {
+            championId: mastery.championId,
+            championName: this.lolService.getChampionName(mastery.championId),
+            level: mastery.championLevel,
+            points: mastery.championPoints,
+          };
+        },
+      );
+
+    return {
+      puuid: summoner.puuid,
+      summonerId: summoner.id,
+      summonerName: summoner.name,
+      summonerIconId: summoner.profileIconId,
+      summonerLevel: summoner.summonerLevel,
+      tier: Tier[summoner.leagues[0]?.tier],
+      rank: Rank[summoner.leagues[0]?.rank],
+      leaguePoints: summoner.leagues[0]?.leaguePoints,
+      masteries: {
+        createMany: {
+          data: masteries,
+        },
+      },
+    };
   }
 }

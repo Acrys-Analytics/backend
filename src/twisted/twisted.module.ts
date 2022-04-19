@@ -1,16 +1,13 @@
 import { DynamicModule, Global, Module, Provider } from '@nestjs/common';
 import { LolApi } from 'twisted';
-import { LOL_API } from './twisted.constants';
+import { IBaseApiParams } from 'twisted/dist/base/base.utils';
+import { LOL_API } from './constants';
 
 @Global()
 @Module({})
 export class TwistedModule {
-  static forRoot(apiKey: string): DynamicModule {
-    const lolApi = new LolApi({
-      rateLimitRetry: true,
-      rateLimitRetryAttempts: 3,
-      key: apiKey,
-    });
+  static forRoot(config: IBaseApiParams): DynamicModule {
+    const lolApi = new LolApi(config);
 
     const lolApiProvider: Provider = {
       provide: LOL_API,
