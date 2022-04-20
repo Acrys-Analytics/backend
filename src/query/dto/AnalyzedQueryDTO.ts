@@ -18,6 +18,17 @@ export namespace AnalyzedQueriesDTOs {
   export interface AnalyzedSnapshot extends CompleteSummoner {
     championPool: Champion[];
     mostPlayedPosition: PositionPlayed[];
+    globalStats: GlobalStats;
+  }
+  export interface GlobalStats {
+    kills: number;
+    deaths: number;
+    assists: number;
+    totalGames: number;
+    wins: number;
+    avgVisionScore: number;
+    avgVisionWardsBought: number;
+    avgCreepScore: number;
   }
   export interface Champion
     extends Prisma.MasteryCreateWithoutSummonerSnapshotInput {

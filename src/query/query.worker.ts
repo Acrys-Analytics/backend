@@ -24,7 +24,7 @@ import {
 import { ClashTeamDto } from 'twisted/dist/models-dto/clash/team.clash.dto';
 import { FetchMatchDTO } from './dto/FetchMatchDTO';
 import { QueryUpdatedEvent } from './events/query-updated.event';
-import { ClashPositionMapping } from './maps/clashPosition';
+import { ClashPositionMapping } from './constants/clashPosition';
 
 type SummonerMetadata = {
   leagues: SummonerLeagueDto[];
@@ -62,9 +62,15 @@ export class QueryWorker {
 
     switch (query.type) {
       case 'PLAYER': {
-        this.logger.debug(`Searching for player ${query.search}`);
-        const player = await this.fetchSummonerbyName(query.search, region);
-        summoners.push(this.serializeSummoner(player));
+        const searchSplit = query.search.split(',');
+
+        for (let i = 0; i < searchSplit.length; i++) {
+          const summonerSearch = searchSplit[i];
+
+          this.logger.debug(`Searching for player ${summonerSearch}`);
+          const player = await this.fetchSummonerbyName(summonerSearch, region);
+          summoners.push(this.serializeSummoner(player));
+        }
         break;
       }
       case 'CLASH': {

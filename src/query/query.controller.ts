@@ -8,7 +8,6 @@ import {
   Sse,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
-import { AnalyzedQueriesDTOs } from './dto/AnalyzedQueryDTO';
 import { CreateQueryDTO } from './dto/CreateQueryDTO';
 import { QueryCreatedDTO } from './dto/QueryCreatedDTO';
 import { QueryService } from './query.service';

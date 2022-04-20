@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bull';
-import { Injectable, MessageEvent } from '@nestjs/common';
+import { Injectable, Logger, MessageEvent } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Queue } from 'bull';
 import { Observable } from 'rxjs';
@@ -11,6 +11,8 @@ import { AnalyticsQuery, Mastery, SummonerSnapshot } from '@prisma/client';
 
 @Injectable()
 export class QueryService {
+  private readonly logger = new Logger(QueryService.name);
+
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
@@ -85,6 +87,8 @@ export class QueryService {
   async handleQueryUpdate(payload: QueryUpdatedEvent) {
     const analyzedQuery = await this.getAnalyzedQuery(payload.queryId);
 
+    this.logger.verbose(`Sending query update for id ${payload.queryId}`);
+
     this.eventEmitter.emit(
       `query.result.${payload.queryId}.update`,
       analyzedQuery,
@@ -100,6 +104,7 @@ export class QueryService {
 
     for (let i = 0; i < query.snapshots.length; i++) {
       const snapshot = query.snapshots[i];
+      const globalStats = await this.getGlobalStats(snapshot);
       const championPool = await this.getMostPlayedChampions(
         snapshot,
         snapshot.masteries,
@@ -110,6 +115,7 @@ export class QueryService {
         ...snapshot,
         championPool,
         mostPlayedPosition,
+        globalStats,
       });
     }
 
@@ -127,6 +133,55 @@ export class QueryService {
     });
 
     return count > 0;
+  }
+
+  private async getGlobalStats(
+    snapshot: SummonerSnapshot,
+  ): Promise<AnalyzedQueriesDTOs.GlobalStats> {
+    const global = await this.prisma.participant.aggregate({
+      _count: {
+        matchId: true,
+      },
+      _sum: {
+        kills: true,
+        deaths: true,
+        assists: true,
+      },
+      _avg: {
+        visionScore: true,
+        visionWardsBoughtInGame: true,
+        creepScore: true,
+      },
+      where: {
+        snapshots: {
+          some: {
+            id: snapshot.id,
+          },
+        },
+      },
+    });
+
+    const wins = await this.prisma.participant.count({
+      where: {
+        win: true,
+        snapshots: {
+          some: {
+            id: snapshot.id,
+          },
+        },
+      },
+    });
+
+    return {
+      kills: global._sum.kills,
+      deaths: global._sum.deaths,
+      assists: global._sum.assists,
+      totalGames: global._count.matchId,
+      wins,
+      avgVisionScore: global._avg.visionScore,
+      avgVisionWardsBought: global._avg.visionWardsBoughtInGame,
+      avgCreepScore: global._avg.creepScore,
+    };
   }
 
   private async getMostPlayedChampions(
@@ -231,7 +286,13 @@ export class QueryService {
       include: {
         snapshots: {
           include: {
-            participants: true,
+            participants: {
+              orderBy: {
+                Match: {
+                  createdAt: 'desc',
+                },
+              },
+            },
             masteries: true,
           },
         },

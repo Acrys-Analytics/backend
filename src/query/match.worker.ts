@@ -12,6 +12,12 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { LOL_API } from 'src/twisted/constants';
 import { LolApi } from 'twisted';
 import { MatchV5DTOs } from 'twisted/dist/models-dto';
+import {
+  botQueues,
+  goodQueues,
+  theOtherOnes,
+  tutorialQueues,
+} from './constants/matchQueues';
 import { FetchMatchDTO } from './dto/FetchMatchDTO';
 import { QueryUpdatedEvent } from './events/query-updated.event';
 
@@ -40,15 +46,22 @@ export class MatchWorker {
     const match = (await this.lolApi.MatchV5.get(matchId, regionGroup))
       .response;
 
+    if (!(this.isNotBugged(match) && goodQueues.includes(match.info.queueId))) {
+      this.logger.warn(`Got bad match ${matchId}. Aborting!`);
+      return;
+    }
+
     const dbMatch = await this.saveMatch(match);
+
+    await this.linkSnapshots(job);
     this.eventEmitter.emit(`query.update`, { queryId } as QueryUpdatedEvent);
 
     this.logger.debug(`Successfully fetched match ${dbMatch.id}`);
     return dbMatch;
   }
 
-  @OnQueueCompleted()
-  async linkSnapshots(job: Job<FetchMatchDTO>, result: Match) {
+  //@OnQueueCompleted()
+  async linkSnapshots(job: Job<FetchMatchDTO>) {
     const { snapshots } = job.data;
 
     for (let i = 0; i < snapshots.length; i++) {
@@ -99,6 +112,12 @@ export class MatchWorker {
         (perkStyle) => perkStyle.style,
       );
 
+      // Double check for bot games
+      if (participant.summonerId === 'BOT') {
+        this.logger.warn('FUCKING BOT GAME');
+        continue;
+      }
+
       await this.prisma.participant.create({
         data: {
           summonerId: participant.summonerId,
@@ -137,6 +156,14 @@ export class MatchWorker {
     }
 
     return match;
+  }
+
+  private isNotBugged(match: MatchV5DTOs.MatchDto): boolean {
+    const { participants, teams, gameMode } = match.info;
+
+    return (
+      participants.length > 0 && teams.length > 0 && gameMode !== 'PRACTICETOOL'
+    );
   }
 
   private predictPosition(
