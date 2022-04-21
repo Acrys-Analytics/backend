@@ -25,6 +25,7 @@ import { ClashTeamDto } from 'twisted/dist/models-dto/clash/team.clash.dto';
 import { FetchMatchDTO } from './dto/FetchMatchDTO';
 import { QueryUpdatedEvent } from './events/query-updated.event';
 import { ClashPositionMapping } from './constants/clashPosition';
+import { SOLO } from './constants/leagueQueueTypes';
 
 type SummonerMetadata = {
   leagues: SummonerLeagueDto[];
@@ -395,15 +396,19 @@ export class QueryWorker {
         },
       );
 
+    const soloLeague = summoner.leagues.find(
+      (league) => league.queueType === SOLO,
+    );
+
     return {
       puuid: summoner.puuid,
       summonerId: summoner.id,
       summonerName: summoner.name,
       summonerIconId: summoner.profileIconId,
       summonerLevel: summoner.summonerLevel,
-      tier: Tier[summoner.leagues[0]?.tier],
-      rank: Rank[summoner.leagues[0]?.rank],
-      leaguePoints: summoner.leagues[0]?.leaguePoints,
+      tier: Tier[soloLeague?.tier],
+      rank: Rank[soloLeague?.rank],
+      leaguePoints: soloLeague?.leaguePoints,
       masteries: {
         createMany: {
           data: masteries,
