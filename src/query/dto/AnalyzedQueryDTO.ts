@@ -15,10 +15,12 @@ export namespace AnalyzedQueriesDTOs {
   export interface AnalyzedQuery extends AnalyticsQuery {
     snapshots: AnalyzedSnapshot[];
   }
-  export interface AnalyzedSnapshot extends CompleteSummoner {
+  export interface AnalyzedSnapshot
+    extends Omit<CompleteSummoner, 'participants'> {
     championPool: Champion[];
     mostPlayedPosition: PositionPlayed[];
     globalStats: GlobalStats;
+    participants: MatchParticipant[];
   }
   export interface GlobalStats {
     kills: number;
@@ -29,6 +31,15 @@ export namespace AnalyzedQueriesDTOs {
     avgVisionScore: number;
     avgVisionWardsBought: number;
     avgCreepScore: number;
+  }
+  export interface MatchParticipant
+    extends Omit<Omit<Participant, 'spells'>, 'runes'> {
+    spells: ItemObject[];
+    runes: ItemObject[];
+  }
+  export interface ItemObject {
+    id: number;
+    image: string;
   }
   export interface Champion
     extends Prisma.MasteryCreateWithoutSummonerSnapshotInput {

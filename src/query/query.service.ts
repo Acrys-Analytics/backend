@@ -8,6 +8,7 @@ import { CreateQueryDTO } from './dto/CreateQueryDTO';
 import { AnalyzedQueriesDTOs } from './dto/AnalyzedQueryDTO';
 import { QueryUpdatedEvent } from './events/query-updated.event';
 import { AnalyticsQuery, Mastery, SummonerSnapshot } from '@prisma/client';
+import { LolService } from 'src/lol/lol.service';
 
 @Injectable()
 export class QueryService {
@@ -16,6 +17,7 @@ export class QueryService {
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
+    private lolService: LolService,
     @InjectQueue('query') private queryQueue: Queue<AnalyticsQuery>,
   ) {}
 
@@ -109,10 +111,43 @@ export class QueryService {
         snapshot,
         snapshot.masteries,
       );
+
+      // Getting image path for every spell and rune
+      const participants =
+        snapshot.participants.map<AnalyzedQueriesDTOs.MatchParticipant>(
+          (participant) => {
+            const spells =
+              participant.spells.map<AnalyzedQueriesDTOs.ItemObject>(
+                (spellId) => {
+                  return {
+                    id: spellId,
+                    image:
+                      this.lolService.getSummonerSpellById(spellId).image.full,
+                  };
+                },
+              );
+
+            const runes = participant.runes.map<AnalyzedQueriesDTOs.ItemObject>(
+              (runeId) => {
+                return {
+                  id: runeId,
+                  image: this.lolService.getRuneById(runeId).icon,
+                };
+              },
+            );
+
+            return {
+              ...participant,
+              spells,
+              runes,
+            };
+          },
+        );
       const mostPlayedPosition = await this.getPositionCount(snapshot);
 
       snapshots.push({
         ...snapshot,
+        participants,
         championPool,
         mostPlayedPosition,
         globalStats,

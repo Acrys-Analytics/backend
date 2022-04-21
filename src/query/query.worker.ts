@@ -3,7 +3,6 @@ import { Inject, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   AnalyticsQuery,
-  Match,
   Position,
   Prisma,
   Rank,
@@ -25,7 +24,7 @@ import { ClashTeamDto } from 'twisted/dist/models-dto/clash/team.clash.dto';
 import { FetchMatchDTO } from './dto/FetchMatchDTO';
 import { QueryUpdatedEvent } from './events/query-updated.event';
 import { ClashPositionMapping } from './constants/clashPosition';
-import { SOLO } from './constants/leagueQueueTypes';
+import { FLEX, SOLO } from './constants/leagueQueueTypes';
 
 type SummonerMetadata = {
   leagues: SummonerLeagueDto[];
@@ -228,7 +227,13 @@ export class QueryWorker {
     summonerName: string,
     region: Regions,
   ): Promise<CompleteSummoner> {
-    const summoner = await this.getSummonerByName(summonerName, region);
+    let summoner: SummonerV4DTO;
+
+    try {
+      summoner = await this.getSummonerByName(summonerName, region);
+    } catch (e) {
+      throw new Error(`Couldn't find summoner ${summonerName}.`);
+    }
     const metaData = await this.fetchMetadataForSummoner(summoner, region);
 
     return {
@@ -400,14 +405,18 @@ export class QueryWorker {
       (league) => league.queueType === SOLO,
     );
 
+    const flexLeague = summoner.leagues.find(
+      (league) => league.queueType === FLEX,
+    );
+
     return {
       puuid: summoner.puuid,
       summonerId: summoner.id,
       summonerName: summoner.name,
       summonerIconId: summoner.profileIconId,
       summonerLevel: summoner.summonerLevel,
-      tier: Tier[soloLeague?.tier],
-      rank: Rank[soloLeague?.rank],
+      tier: Tier[soloLeague?.tier || flexLeague?.tier],
+      rank: Rank[soloLeague?.rank || flexLeague?.rank],
       leaguePoints: soloLeague?.leaguePoints,
       masteries: {
         createMany: {
