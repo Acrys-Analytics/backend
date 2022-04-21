@@ -203,6 +203,10 @@ export class QueryWorker {
         //complete: true,
       },
     });
+
+    this.eventEmitter.emit(`query.update`, {
+      queryId: query.id,
+    } as QueryUpdatedEvent);
   }
 
   private async fetchClashTeam(
