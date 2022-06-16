@@ -119,9 +119,6 @@ export class QueryService {
             const spells =
               participant.spells.map<AnalyzedQueriesDTOs.ItemObject>(
                 (spellId) => {
-                  console.log(spellId);
-                  console.log(this.lolService.getSummonerSpellById(spellId));
-
                   return {
                     id: spellId,
                     image:
