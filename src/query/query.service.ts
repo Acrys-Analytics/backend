@@ -119,10 +119,13 @@ export class QueryService {
             const spells =
               participant.spells.map<AnalyzedQueriesDTOs.ItemObject>(
                 (spellId) => {
+                  console.log(spellId);
+                  console.log(this.lolService.getSummonerSpellById(spellId));
+
                   return {
                     id: spellId,
                     image:
-                      this.lolService.getSummonerSpellById(spellId).image.full,
+                      this.lolService.getSummonerSpellById(spellId)?.image.full,
                   };
                 },
               );
@@ -131,7 +134,7 @@ export class QueryService {
               (runeId) => {
                 return {
                   id: runeId,
-                  image: this.lolService.getRuneById(runeId).icon,
+                  image: this.lolService.getRuneById(runeId)?.icon,
                 };
               },
             );
